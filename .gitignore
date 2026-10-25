@@ -17,3 +17,6 @@ ios-extras/build.log
 
 # Telegram-iOS собирается в CI из upstream, в этот репо не коммитим
 Telegram-iOS/
+
+dist/
+tg-edit/
