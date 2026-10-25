@@ -121,15 +121,18 @@ jobs:
             --configurationPath="$RUNNER_TEMP/configuration.json" \
             --codesigningInformationPath="$(pwd)/build-system/fake-codesigning" \
             --buildNumber=${{ github.event.inputs.build_number }} \
-            --configuration=release_arm64
+            --configuration=release_arm64 \
+            --outputBuildArtifactsPath="$RUNNER_TEMP/artifacts"
 
       - name: Найти и собрать артефакт .ipa
         working-directory: Telegram-iOS
         run: |
           mkdir -p "$RUNNER_TEMP/out"
-          find . -name "*.ipa" -exec cp {} "$RUNNER_TEMP/out/" \; || true
-          ls -la "$RUNNER_TEMP/out/" || true
-          test -n "$(ls -A "$RUNNER_TEMP/out/" 2>/dev/null)" || { echo "::error::.ipa не найден"; exit 1; }
+          # 1) куда Make.py кладёт артефакты; 2) bazel-bin (через симлинки, -L)
+          find -L "$RUNNER_TEMP/artifacts" bazel-bin . -name "*.ipa" 2>/dev/null \
+            -exec cp -f {} "$RUNNER_TEMP/out/" \; || true
+          echo "=== найденные .ipa ==="; ls -la "$RUNNER_TEMP/out/" || true
+          test -n "$(ls -A "$RUNNER_TEMP/out/" 2>/dev/null)" || { echo "::error::.ipa не найден — покажу дерево artifacts"; find -L "$RUNNER_TEMP/artifacts" -maxdepth 3 2>/dev/null; exit 1; }
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
