@@ -1,0 +1,39 @@
+name: Telegram build env probe (cheap)
+
+# Дешёвая проверка ПЕРЕД тяжёлой сборкой: есть ли на раннере нужный Xcode 26.2
+# и совпадает ли окружение с versions.json тега. ~2-3 минуты macOS-времени.
+# Запускать вручную ПЕРВЫМ, до telegram-ipa.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      telegram_ref:
+        description: 'Тег Telegram-iOS'
+        required: true
+        default: 'release-12.9.2'
+
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Runner macOS
+        run: sw_vers
+
+      - name: Доступные Xcode
+        run: ls /Applications | grep -i Xcode || true
+
+      - name: Выбрать Xcode 26.2 (если есть)
+        continue-on-error: true
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.2'
+
+      - name: Активный Xcode
+        run: xcodebuild -version || true
+
+      - name: versions.json тега
+        run: |
+          curl -s "https://raw.githubusercontent.com/TelegramMessenger/Telegram-iOS/${{ github.event.inputs.telegram_ref }}/versions.json"
+          echo
+          echo "Нужно: Xcode 26.2 / Bazel 8.4.2 / macOS 26. Сверь с выводом выше."

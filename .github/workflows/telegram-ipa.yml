@@ -1,32 +1,41 @@
 name: Telegram-iOS fork IPA (heavy)
 
-# ВНИМАНИЕ: это тяжёлая сборка полного форка Telegram-iOS (Bazel).
-# - запускается ТОЛЬКО вручную (workflow_dispatch), чтобы не жечь лимит минут;
-# - macOS-минуты на бесплатном тарифе считаются ×10 — один прогон может
-#   съесть месячный лимит или упасть по таймауту. Это ожидаемо, не баг.
-# - цель — получить UNSIGNED .ipa; подпись делает AltStore твоим Apple ID
-#   уже на iPhone, поэтому сертификаты Apple в CI не нужны.
+# Собирает форк Telegram-iOS в .ipa, используя ВСТРОЕННЫЙ build-system/fake-codesigning
+# (портал Apple не нужен). Полученный .ipa потом переподписывается AltServer на Windows
+# бесплатным Apple ID (он сам создаёт cert/профиль, режет недоступные entitlements,
+# переписывает bundle id и ставит на iPhone, обновляя подпись каждые 7 дней).
 #
-# Первый прогон почти наверняка потребует правок (пути, версия Bazel, config).
-# Здесь каркас — не выдаём его за гарантированно зелёную сборку.
+# ВНИМАНИЕ:
+# - только ручной запуск (workflow_dispatch); macOS-минуты считаются ×10;
+# - СНАЧАЛА прогони telegram-env-probe.yml и убедись, что Xcode 26.2 есть на раннере;
+# - нужны секреты репозитория TELEGRAM_API_ID и TELEGRAM_API_HASH (значения вводишь сам).
+#
+# Это первый реальный вариант; первый прогон может потребовать правок (версия Xcode на
+# раннере, лимиты app-id бесплатного аккаунта, Bazel-кэш). Не выдаём за гарантированную сборку.
 
 on:
   workflow_dispatch:
     inputs:
       telegram_ref:
-        description: 'Тег/ветка Telegram-iOS (напр. release-XX.X)'
+        description: 'Тег Telegram-iOS (под Xcode раннера)'
         required: true
-        default: 'master'
+        default: 'release-12.9.2'
+      build_number:
+        description: 'Build number'
+        required: true
+        default: '100001'
 
 jobs:
   build-ipa:
     runs-on: macos-15
     timeout-minutes: 300
     steps:
-      - name: Checkout fork repo
+      - name: Checkout fork repo (KUpergram)
         uses: actions/checkout@v4
+        with:
+          path: KUpergram
 
-      - name: Checkout Telegram-iOS source
+      - name: Checkout Telegram-iOS ${{ github.event.inputs.telegram_ref }}
         uses: actions/checkout@v4
         with:
           repository: TelegramMessenger/Telegram-iOS
@@ -34,35 +43,76 @@ jobs:
           path: Telegram-iOS
           submodules: recursive
 
-      - name: Cache Bazel
-        uses: actions/cache@v4
+      - name: Select Xcode 26.2 (из versions.json тега)
+        uses: maxim-lobanov/setup-xcode@v1
         with:
-          path: |
-            ~/.cache/bazel
-            ~/.bazel
-          key: bazel-${{ runner.os }}-${{ github.event.inputs.telegram_ref }}
+          xcode-version: '26.2'
 
-      - name: Prepare build config
-        run: |
-          # Сюда подставляются api_id/api_hash из секретов репозитория
-          # (Settings → Secrets → Actions). В исходниках их НЕ хранить.
-          echo "TELEGRAM_API_ID=${{ secrets.TELEGRAM_API_ID }}"   >> "$GITHUB_ENV"
-          echo "TELEGRAM_API_HASH=${{ secrets.TELEGRAM_API_HASH }}" >> "$GITHUB_ENV"
-          echo "Готовим конфиг сборки (bundle id, имя, api креды)."
-          echo "TODO: сгенерировать build config форка перед Bazel build."
-
-      - name: Build (Bazel, unsigned)
+      - name: Проверка версий (без override)
         working-directory: Telegram-iOS
         run: |
-          echo "TODO: запустить сборку форка, напр.:"
-          echo "python3 build-system/Make/Make.py build --configurationPath=... --buildNumber=1 --configuration=release_universal"
-          echo "Затем упаковать .app в unsigned .ipa (zip Payload/)."
-          # Этот шаг надо доводить итеративно на реальных прогонах.
-          exit 1   # защита: не притворяемся, что IPA собралась
+          echo "=== versions.json ==="; cat versions.json
+          echo "=== активный Xcode ==="; xcodebuild -version
+          # если Xcode не 26.2 — лучше остановиться здесь, чем жечь часы на провальной сборке
+          xcodebuild -version | grep -q "26.2" || { echo "::error::Xcode на раннере не 26.2 — см. telegram-env-probe"; exit 1; }
 
-      - name: Upload IPA artifact
-        if: success()
+      - name: Кэш Bazel
+        uses: actions/cache@v4
+        with:
+          path: ~/telegram-bazel-cache
+          key: tg-bazel-${{ github.event.inputs.telegram_ref }}-${{ runner.os }}
+
+      - name: Сгенерировать configuration.json из секретов (во временной папке)
+        env:
+          API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: |
+          if [ -z "$API_ID" ] || [ -z "$API_HASH" ]; then
+            echo "::error::Добавь секреты TELEGRAM_API_ID и TELEGRAM_API_HASH"; exit 1
+          fi
+          # team_id / bundle_id совпадают с fake-codesigning, чтобы сборка завершилась;
+          # AltServer при установке перепишет bundle id и подпись под твой бесплатный аккаунт.
+          # Платные фичи выключены (бесплатный аккаунт их не провиженит).
+          cat > "$RUNNER_TEMP/configuration.json" <<EOF
+          {
+            "bundle_id": "ph.telegra.Telegraph",
+            "api_id": "$API_ID",
+            "api_hash": "$API_HASH",
+            "team_id": "C67CF9S4VU",
+            "app_center_id": "0",
+            "is_internal_build": "true",
+            "is_appstore_build": "false",
+            "appstore_id": "0",
+            "app_specific_url_scheme": "tg",
+            "premium_iap_product_id": "org.telegram.telegramPremium.monthly",
+            "enable_siri": false,
+            "enable_icloud": false
+          }
+          EOF
+          echo "configuration.json создан (секреты не печатаю)."
+
+      - name: Build IPA (Make.py + fake-codesigning)
+        working-directory: Telegram-iOS
+        run: |
+          python3 build-system/Make/Make.py \
+            --cacheDir="$HOME/telegram-bazel-cache" \
+            build \
+            --configurationPath="$RUNNER_TEMP/configuration.json" \
+            --codesigningInformationPath="$(pwd)/build-system/fake-codesigning" \
+            --buildNumber=${{ github.event.inputs.build_number }} \
+            --configuration=release_arm64
+
+      - name: Найти и собрать артефакт .ipa
+        working-directory: Telegram-iOS
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          find . -name "*.ipa" -exec cp {} "$RUNNER_TEMP/out/" \; || true
+          ls -la "$RUNNER_TEMP/out/" || true
+          test -n "$(ls -A "$RUNNER_TEMP/out/" 2>/dev/null)" || { echo "::error::.ipa не найден"; exit 1; }
+
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: KUpergram-unsigned-ipa
-          path: '**/*.ipa'
+          name: KUpergram-ipa
+          path: ${{ runner.temp }}/out/*.ipa
+          if-no-files-found: error
