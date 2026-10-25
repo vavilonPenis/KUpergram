@@ -1,0 +1,68 @@
+name: Telegram-iOS fork IPA (heavy)
+
+# ВНИМАНИЕ: это тяжёлая сборка полного форка Telegram-iOS (Bazel).
+# - запускается ТОЛЬКО вручную (workflow_dispatch), чтобы не жечь лимит минут;
+# - macOS-минуты на бесплатном тарифе считаются ×10 — один прогон может
+#   съесть месячный лимит или упасть по таймауту. Это ожидаемо, не баг.
+# - цель — получить UNSIGNED .ipa; подпись делает AltStore твоим Apple ID
+#   уже на iPhone, поэтому сертификаты Apple в CI не нужны.
+#
+# Первый прогон почти наверняка потребует правок (пути, версия Bazel, config).
+# Здесь каркас — не выдаём его за гарантированно зелёную сборку.
+
+on:
+  workflow_dispatch:
+    inputs:
+      telegram_ref:
+        description: 'Тег/ветка Telegram-iOS (напр. release-XX.X)'
+        required: true
+        default: 'master'
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    timeout-minutes: 300
+    steps:
+      - name: Checkout fork repo
+        uses: actions/checkout@v4
+
+      - name: Checkout Telegram-iOS source
+        uses: actions/checkout@v4
+        with:
+          repository: TelegramMessenger/Telegram-iOS
+          ref: ${{ github.event.inputs.telegram_ref }}
+          path: Telegram-iOS
+          submodules: recursive
+
+      - name: Cache Bazel
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/bazel
+            ~/.bazel
+          key: bazel-${{ runner.os }}-${{ github.event.inputs.telegram_ref }}
+
+      - name: Prepare build config
+        run: |
+          # Сюда подставляются api_id/api_hash из секретов репозитория
+          # (Settings → Secrets → Actions). В исходниках их НЕ хранить.
+          echo "TELEGRAM_API_ID=${{ secrets.TELEGRAM_API_ID }}"   >> "$GITHUB_ENV"
+          echo "TELEGRAM_API_HASH=${{ secrets.TELEGRAM_API_HASH }}" >> "$GITHUB_ENV"
+          echo "Готовим конфиг сборки (bundle id, имя, api креды)."
+          echo "TODO: сгенерировать build config форка перед Bazel build."
+
+      - name: Build (Bazel, unsigned)
+        working-directory: Telegram-iOS
+        run: |
+          echo "TODO: запустить сборку форка, напр.:"
+          echo "python3 build-system/Make/Make.py build --configurationPath=... --buildNumber=1 --configuration=release_universal"
+          echo "Затем упаковать .app в unsigned .ipa (zip Payload/)."
+          # Этот шаг надо доводить итеративно на реальных прогонах.
+          exit 1   # защита: не притворяемся, что IPA собралась
+
+      - name: Upload IPA artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KUpergram-unsigned-ipa
+          path: '**/*.ipa'

@@ -1,0 +1,33 @@
+name: KUpergramExtras build check
+
+# Быстрый и дешёвый шаг: компилирует наш Swift-модуль под iOS Simulator.
+# Это РЕАЛЬНАЯ проверка, что экраны/Store/API собираются, без тяжёлой
+# сборки всего Telegram-iOS.
+
+on:
+  push:
+    paths:
+      - 'ios-extras/**'
+      - '.github/workflows/extras-check.yml'
+  workflow_dispatch:
+
+jobs:
+  build-extras:
+    runs-on: macos-15          # образ с актуальным Xcode (iOS 26 SDK)
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode / SDKs
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i ios || true
+
+      - name: Build KUpergramExtras for iOS
+        working-directory: ios-extras
+        run: |
+          xcodebuild build \
+            -scheme KUpergramExtras \
+            -destination 'generic/platform=iOS' \
+            -skipPackagePluginValidation \
+            | tee build.log

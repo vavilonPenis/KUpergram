@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+server/*.db
+server/.venv/
+.env
+
+# Swift / Xcode
+.build/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+ios-extras/build.log
+
+# macOS
+.DS_Store
+
+# Telegram-iOS собирается в CI из upstream, в этот репо не коммитим
+Telegram-iOS/
