@@ -41,7 +41,18 @@ jobs:
           repository: vavilonPenis/Telegram-iOS
           ref: ${{ github.event.inputs.telegram_ref }}
           path: Telegram-iOS
-          submodules: recursive
+          submodules: false
+
+      - name: Init submodules (относит. URL → upstream TelegramMessenger)
+        working-directory: Telegram-iOS
+        run: |
+          # относительные пути сабмодулей (../X.git) резолвятся от origin;
+          # временно укажем origin на upstream, чтобы они вели в TelegramMessenger
+          git remote set-url origin https://github.com/TelegramMessenger/Telegram-iOS.git
+          git submodule sync --recursive
+          git -c url."https://github.com/TelegramMessenger/".insteadOf="https://github.com/vavilonPenis/" \
+              submodule update --init --recursive --jobs 4
+          git remote set-url origin https://github.com/vavilonPenis/Telegram-iOS.git
 
       - name: Select Xcode 26.2 (из versions.json тега)
         uses: maxim-lobanov/setup-xcode@v1
