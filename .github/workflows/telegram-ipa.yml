@@ -17,9 +17,9 @@ on:
   workflow_dispatch:
     inputs:
       telegram_ref:
-        description: 'Тег Telegram-iOS (под Xcode раннера)'
+        description: 'Ветка/тег форка Telegram-iOS'
         required: true
-        default: 'release-12.9.2'
+        default: 'kupergram'
       build_number:
         description: 'Build number'
         required: true
@@ -38,7 +38,7 @@ jobs:
       - name: Checkout Telegram-iOS ${{ github.event.inputs.telegram_ref }}
         uses: actions/checkout@v4
         with:
-          repository: TelegramMessenger/Telegram-iOS
+          repository: vavilonPenis/Telegram-iOS
           ref: ${{ github.event.inputs.telegram_ref }}
           path: Telegram-iOS
           submodules: recursive
@@ -60,9 +60,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/telegram-bazel-cache
-          key: tg-bazel-${{ github.event.inputs.telegram_ref }}-
+          key: tg-bazel-12.9.2-
           restore-keys: |
-            tg-bazel-${{ github.event.inputs.telegram_ref }}-
+            tg-bazel-12.9.2-
 
       - name: Сгенерировать configuration.json из секретов (во временной папке)
         env:
@@ -112,6 +112,26 @@ jobs:
           echo "=== identities в keychain ==="
           security find-identity -v "$KEYCHAIN" || true
 
+      - name: Сгенерировать KUpergramConfig.swift из секретов
+        env:
+          KG_BASE: ${{ secrets.KUPERGRAM_BASE_URL }}
+          KG_ME: ${{ secrets.KUPERGRAM_TOKEN_ME }}
+          KG_ADMIN: ${{ secrets.KUPERGRAM_ADMIN_TOKEN }}
+        run: |
+          if [ -z "$KG_BASE" ] || [ -z "$KG_ME" ]; then
+            echo "::error::нет секретов KUPERGRAM_BASE_URL / KUPERGRAM_TOKEN_ME"; exit 1
+          fi
+          cat > Telegram-iOS/submodules/KUpergramExtras/Sources/KUpergramConfig.swift <<EOF
+          import Foundation
+          public enum KUpergramConfig {
+              public static let baseURL = "${KG_BASE}"
+              public static let userToken = "${KG_ME}"
+              public static let adminToken = "${KG_ADMIN}"
+              public static let currentUserId = "me"
+          }
+          EOF
+          echo "KUpergramConfig.swift сгенерирован (секреты не печатаю)."
+
       - name: Build IPA (Make.py + fake-codesigning)
         working-directory: Telegram-iOS
         run: |
@@ -147,4 +167,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/telegram-bazel-cache
-          key: tg-bazel-${{ github.event.inputs.telegram_ref }}-${{ github.run_id }}
+          key: tg-bazel-12.9.2-${{ github.run_id }}
