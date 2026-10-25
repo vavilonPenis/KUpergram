@@ -27,7 +27,12 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 DB_PATH = os.environ.get("KUPERGRAM_DB", "kupergram.db")
-ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")  # обязателен в проде
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")          # админ-методы
+# Пер-юзер токены: личность определяется сервером по токену, не из тела запроса.
+USER_TOKENS = {t: uid for t, uid in (
+    (os.environ.get("USER_TOKEN_ME", ""), "me"),
+    (os.environ.get("USER_TOKEN_FRIEND", ""), "friend"),
+) if t}
 
 app = FastAPI(title="KUpergram Sync", version="0.1.0")
 
@@ -105,11 +110,20 @@ def init_db():
 init_db()
 
 
-def auth(x_admin_token: str = Header(default="")):
+def require_admin(x_admin_token: str = Header(default="")):
+    """Админ-методы: только по ADMIN_TOKEN."""
     if not ADMIN_TOKEN:
         raise HTTPException(500, "ADMIN_TOKEN не задан на сервере")
     if x_admin_token != ADMIN_TOKEN:
         raise HTTPException(401, "bad admin token")
+
+
+def current_user(x_user_token: str = Header(default="")) -> str:
+    """Личность пользователя определяется СЕРВЕРОМ по его токену."""
+    uid = USER_TOKENS.get(x_user_token)
+    if not uid:
+        raise HTTPException(401, "bad user token")
+    return uid
 
 
 def now() -> int:
@@ -186,14 +200,14 @@ class Transfer(BaseModel):
 
 
 class Gift(BaseModel):
-    from_user: str
+    # from_user определяется сервером по токену — клиент его НЕ задаёт
     to_user: str
     stars_cost: int = 0       # сколько визуальных звёзд спишется у дарителя (0 = бесплатно)
     message: Optional[str] = None
 
 
 class Purchase(BaseModel):
-    owner_id: str = "me"
+    # owner_id определяется сервером по токену — клиент его НЕ задаёт
     stars_cost: int = 0       # 0 = бесплатно
     collectible: bool = False
     slug: Optional[str] = None
@@ -255,8 +269,8 @@ def health():
     return {"ok": True, "ts": now()}
 
 
-@app.get("/state", dependencies=[Depends(auth)])
-def state():
+@app.get("/state")
+def state(_uid: str = Depends(current_user)):
     """Полный снимок для синхронизации клиента."""
     with db() as conn:
         users = [dict(r) for r in conn.execute("SELECT * FROM users")]
@@ -271,7 +285,7 @@ def state():
             "history": history, "gifts": gifts}
 
 
-@app.post("/stars/adjust", dependencies=[Depends(auth)])
+@app.post("/stars/adjust", dependencies=[Depends(require_admin)])
 def stars_adjust(body: StarsAdjust):
     with db() as conn:
         row = conn.execute("SELECT balance FROM stars WHERE user_id=?",
@@ -291,12 +305,12 @@ def stars_adjust(body: StarsAdjust):
     return {"user_id": body.user_id, "balance": new_balance}
 
 
-@app.get("/nft/resolve", dependencies=[Depends(auth)])
+@app.get("/nft/resolve", dependencies=[Depends(require_admin)])
 async def nft_resolve(slug: str):
     return await resolve_slug(slug)
 
 
-@app.post("/nft", dependencies=[Depends(auth)])
+@app.post("/nft", dependencies=[Depends(require_admin)])
 async def nft_add(body: NFTIn):
     data = body.model_dump()
     # если задан slug и не хватает полей — попробуем дорезолвить из публичного источника
@@ -316,7 +330,7 @@ async def nft_add(body: NFTIn):
     return {"id": nid, **data}
 
 
-@app.patch("/nft/{nid}", dependencies=[Depends(auth)])
+@app.patch("/nft/{nid}", dependencies=[Depends(require_admin)])
 def nft_patch(nid: str, body: NFTPatch):
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
     if not fields:
@@ -330,7 +344,7 @@ def nft_patch(nid: str, body: NFTPatch):
     return {"id": nid, **fields}
 
 
-@app.post("/nft/{nid}/transfer", dependencies=[Depends(auth)])
+@app.post("/nft/{nid}/transfer", dependencies=[Depends(require_admin)])
 def nft_transfer(nid: str, body: Transfer):
     with db() as conn:
         if conn.execute("SELECT 1 FROM users WHERE id=?", (body.to_user,)).fetchone() is None:
@@ -341,11 +355,12 @@ def nft_transfer(nid: str, body: Transfer):
     return {"id": nid, "owner_id": body.to_user}
 
 
-@app.post("/nft/{nid}/gift", dependencies=[Depends(auth)])
-def nft_gift(nid: str, body: Gift, idempotency_key: str = Header(default="")):
-    """Визуально «подарить» карточку другому пользователю, как в оригинале:
-    списать звёзды у дарителя (если задана цена), сменить владельца, записать
-    событие дарения. Всё атомарно; Idempotency-Key защищает от двойного списания."""
+@app.post("/nft/{nid}/gift")
+def nft_gift(nid: str, body: Gift, from_user: str = Depends(current_user),
+             idempotency_key: str = Header(default="")):
+    """Визуально «подарить» карточку другому пользователю, как в оригинале.
+    Даритель (from_user) определяется СЕРВЕРОМ по токену — нельзя дарить от чужого
+    имени. Всё атомарно; Idempotency-Key защищает от двойного списания."""
     with db() as conn:
         cached = idem_get(conn, idempotency_key)
         if cached is not None:
@@ -354,21 +369,21 @@ def nft_gift(nid: str, body: Gift, idempotency_key: str = Header(default="")):
         nft = conn.execute("SELECT owner_id FROM nfts WHERE id=?", (nid,)).fetchone()
         if nft is None:
             raise HTTPException(404, "nft not found")
-        if nft["owner_id"] != body.from_user:          # владелец проверяется на сервере
-            raise HTTPException(400, "даритель не владеет этим подарком")
+        if nft["owner_id"] != from_user:               # владелец проверяется на сервере
+            raise HTTPException(403, "даритель не владеет этим подарком")
         if conn.execute("SELECT 1 FROM users WHERE id=?", (body.to_user,)).fetchone() is None:
             raise HTTPException(404, "получатель не найден")
-        if body.from_user == body.to_user:
+        if from_user == body.to_user:
             raise HTTPException(400, "нельзя подарить самому себе")
 
-        new_balance = deduct_stars(conn, body.from_user, body.stars_cost,
+        new_balance = deduct_stars(conn, from_user, body.stars_cost,
                                    f"gift {nid} → {body.to_user}")
         conn.execute("UPDATE nfts SET owner_id=? WHERE id=?", (body.to_user, nid))
         gid = uuid.uuid4().hex
         conn.execute(
             "INSERT INTO gifts_log(id,nft_id,from_user,to_user,stars_cost,message,created_at)"
             " VALUES(?,?,?,?,?,?,?)",
-            (gid, nid, body.from_user, body.to_user, body.stars_cost,
+            (gid, nid, from_user, body.to_user, body.stars_cost,
              body.message, now()))
         result = {"gift_id": gid, "nft_id": nid, "owner_id": body.to_user,
                   "from_balance": new_balance}
@@ -376,16 +391,15 @@ def nft_gift(nid: str, body: Gift, idempotency_key: str = Header(default="")):
     return result
 
 
-@app.post("/shop/purchase", dependencies=[Depends(auth)])
-async def shop_purchase(body: Purchase, idempotency_key: str = Header(default="")):
+@app.post("/shop/purchase")
+async def shop_purchase(body: Purchase, owner_id: str = Depends(current_user),
+                        idempotency_key: str = Header(default="")):
     """Купить визуальный подарок за внутренние Stars (cost может быть 0 = бесплатно).
-    Списывает звёзды и создаёт карточку во владении покупателя."""
+    Покупатель (owner_id) определяется СЕРВЕРОМ по токену."""
     with db() as conn:
         cached = idem_get(conn, idempotency_key)
         if cached is not None:
             return cached
-        if conn.execute("SELECT 1 FROM users WHERE id=?", (body.owner_id,)).fetchone() is None:
-            raise HTTPException(404, "покупатель не найден")
 
     data = {"slug": body.slug, "name": body.name, "number": body.number,
             "model": body.model, "backdrop": body.backdrop, "symbol": body.symbol,
@@ -397,7 +411,7 @@ async def shop_purchase(body: Purchase, idempotency_key: str = Header(default=""
                 data[k] = resolved[k]
 
     with db() as conn:
-        new_balance = deduct_stars(conn, body.owner_id, body.stars_cost,
+        new_balance = deduct_stars(conn, owner_id, body.stars_cost,
                                    f"purchase {body.slug or body.name}")
         nid = uuid.uuid4().hex
         conn.execute(
@@ -405,16 +419,17 @@ async def shop_purchase(body: Purchase, idempotency_key: str = Header(default=""
             "owner_id,added_at,is_collectible) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (nid, data["slug"], data["name"], data["number"], data["model"],
              data["backdrop"], data["symbol"], data["image_url"],
-             body.owner_id, now(), 1 if body.collectible else 0))
-        result = {"id": nid, "owner_id": body.owner_id, "balance": new_balance, **data}
+             owner_id, now(), 1 if body.collectible else 0))
+        result = {"id": nid, "owner_id": owner_id, "balance": new_balance, **data}
         idem_put(conn, idempotency_key, result)
     return result
 
 
-@app.post("/nft/{nid}/upgrade", dependencies=[Depends(auth)])
-def nft_upgrade(nid: str, body: Upgrade, idempotency_key: str = Header(default="")):
-    """Апгрейд обычного подарка в коллекционный: задать модель/фон/символ,
-    пометить is_collectible, опционально списать звёзды у владельца."""
+@app.post("/nft/{nid}/upgrade")
+def nft_upgrade(nid: str, body: Upgrade, caller: str = Depends(current_user),
+                idempotency_key: str = Header(default="")):
+    """Апгрейд обычного подарка в коллекционный. Делать может только владелец
+    (определяется по токену), звёзды списываются у него же."""
     with db() as conn:
         cached = idem_get(conn, idempotency_key)
         if cached is not None:
@@ -423,10 +438,12 @@ def nft_upgrade(nid: str, body: Upgrade, idempotency_key: str = Header(default="
                            (nid,)).fetchone()
         if nft is None:
             raise HTTPException(404, "nft not found")
+        if nft["owner_id"] != caller:
+            raise HTTPException(403, "апгрейдить можно только свой подарок")
         if nft["is_collectible"]:
             raise HTTPException(400, "подарок уже коллекционный")
 
-        new_balance = deduct_stars(conn, nft["owner_id"], body.stars_cost,
+        new_balance = deduct_stars(conn, caller, body.stars_cost,
                                    f"upgrade {nid}")
         fields = {k: v for k, v in
                   {"model": body.model, "backdrop": body.backdrop,
@@ -439,7 +456,7 @@ def nft_upgrade(nid: str, body: Upgrade, idempotency_key: str = Header(default="
     return result
 
 
-@app.delete("/nft/{nid}", dependencies=[Depends(auth)])
+@app.delete("/nft/{nid}", dependencies=[Depends(require_admin)])
 def nft_delete(nid: str):
     with db() as conn:
         cur = conn.execute("DELETE FROM nfts WHERE id=?", (nid,))

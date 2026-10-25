@@ -20,8 +20,11 @@ public struct KUpergramRootView: View {
                 .tabItem { Label("Stars", systemImage: "star.fill") }
             GiftHistoryView(store: store)
                 .tabItem { Label("История", systemImage: "clock.fill") }
-            AdminPanelView(store: store)
-                .tabItem { Label("Админ", systemImage: "gearshape.fill") }
+            // Админ-панель — только на устройстве с админ-правами (me). У friend её нет.
+            if store.isAdmin {
+                AdminPanelView(store: store)
+                    .tabItem { Label("Админ", systemImage: "gearshape.fill") }
+            }
         }
         .tint(KTheme.tgBlue)
         .task { await store.sync() }
@@ -32,15 +35,19 @@ public struct KUpergramRootView: View {
 public enum KUpergramHost {
     /// Собирает готовый UIViewController.
     /// - Parameters:
-    ///   - baseURL: адрес сервера синхронизации (например, https://kupergram.example.com)
-    ///   - adminToken: приватный токен (храни в Keychain, НЕ в исходниках)
-    ///   - currentUserId: "me" или "friend" — кто на этом устройстве
+    ///   - baseURL: адрес сервера синхронизации (например, https://kupergram.kuperov.top)
+    ///   - userToken: пользовательский токен (me или friend) — личность определит сервер
+    ///   - adminToken: админ-токен; передавать ТОЛЬКО на устройстве «me». Для friend — nil.
+    ///   - currentUserId: "me" или "friend" (для фильтров UI; доступ всё равно решает токен)
+    ///   Токены храни в Keychain, НЕ в исходниках.
     @MainActor
     public static func makeViewController(baseURL: URL,
-                                          adminToken: String,
+                                          userToken: String,
+                                          adminToken: String? = nil,
                                           currentUserId: String) -> UIViewController {
-        let api = KUpergramAPI(config: .init(baseURL: baseURL, adminToken: adminToken))
-        let store = KUpergramStore(api: api, currentUserId: currentUserId)
+        let config = KUpergramAPI.Config(baseURL: baseURL, userToken: userToken, adminToken: adminToken)
+        let api = KUpergramAPI(config: config)
+        let store = KUpergramStore(api: api, currentUserId: currentUserId, isAdmin: config.isAdmin)
         let root = KUpergramRootView(store: store)
         let vc = UIHostingController(rootView: root)
         vc.title = "KUpergram"

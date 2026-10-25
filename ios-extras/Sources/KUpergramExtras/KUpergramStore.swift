@@ -24,9 +24,13 @@ public final class KUpergramStore: ObservableObject {
     /// Операции «в полёте» — вторая попытка того же действия игнорируется (анти-дабл-тап).
     private var inFlight = Set<String>()
 
-    public init(api: KUpergramAPI, currentUserId: String = "me") {
+    /// Есть ли у этого устройства админ-права (скрывает/показывает админ-панель).
+    public let isAdmin: Bool
+
+    public init(api: KUpergramAPI, currentUserId: String = "me", isAdmin: Bool = false) {
         self.api = api
         self.currentUserId = currentUserId
+        self.isAdmin = isAdmin
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         self.cacheURL = dir.appendingPathComponent("kupergram_state.json")
         loadCache()
@@ -85,8 +89,7 @@ public final class KUpergramStore: ObservableObject {
     public func gift(id: String, to toUser: String, starsCost: Int, message: String?) async {
         let key = UUID().uuidString
         await guarded("gift-\(id)") {
-            let payload = GiftPayload(fromUser: self.currentUserId, toUser: toUser,
-                                      starsCost: starsCost, message: message)
+            let payload = GiftPayload(toUser: toUser, starsCost: starsCost, message: message)
             _ = try await self.api.gift(id: id, payload: payload, idempotencyKey: key)
         }
     }

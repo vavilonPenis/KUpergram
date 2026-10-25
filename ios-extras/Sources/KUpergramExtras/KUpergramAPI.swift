@@ -7,9 +7,12 @@ public final class KUpergramAPI {
 
     public struct Config {
         public var baseURL: URL
-        public var adminToken: String
-        public init(baseURL: URL, adminToken: String) {
+        public var userToken: String          // X-User-Token: личность (me/friend) определяет сервер
+        public var adminToken: String?        // X-Admin-Token: только у устройства с админ-правами
+        public var isAdmin: Bool { adminToken?.isEmpty == false }
+        public init(baseURL: URL, userToken: String, adminToken: String? = nil) {
             self.baseURL = baseURL
+            self.userToken = userToken
             self.adminToken = adminToken
         }
     }
@@ -42,6 +45,7 @@ public final class KUpergramAPI {
         method: String = "GET",
         query: [String: String]? = nil,
         body: Encodable? = nil,
+        admin: Bool = false,
         idempotencyKey: String? = nil,
         as type: T.Type
     ) async throws -> T {
@@ -52,7 +56,14 @@ public final class KUpergramAPI {
         }
         var req = URLRequest(url: comps.url!)
         req.httpMethod = method
-        req.setValue(config.adminToken, forHTTPHeaderField: "X-Admin-Token")
+        // личность — всегда; админ-токен — только для админ-методов
+        req.setValue(config.userToken, forHTTPHeaderField: "X-User-Token")
+        if admin {
+            guard let adm = config.adminToken, !adm.isEmpty else {
+                throw APIError.http(403, "это устройство без админ-прав")
+            }
+            req.setValue(adm, forHTTPHeaderField: "X-Admin-Token")
+        }
         if let key = idempotencyKey {
             req.setValue(key, forHTTPHeaderField: "Idempotency-Key")
         }
@@ -96,18 +107,18 @@ public final class KUpergramAPI {
                           body: ["user_id": AnyEncodable(userId),
                                  "delta": AnyEncodable(delta),
                                  "reason": AnyEncodable(reason)],
-                          as: StarsBalance.self)
+                          admin: true, as: StarsBalance.self)
     }
 
     /// Резолв карточки по slug с публичного источника (для админки/магазина).
     public func resolve(slug: String) async throws -> ResolvedSlug {
-        try await request("nft/resolve", query: ["slug": slug], as: ResolvedSlug.self)
+        try await request("nft/resolve", query: ["slug": slug], admin: true, as: ResolvedSlug.self)
     }
 
     /// Добавить карточку (админка). Возвращает id; актуальные данные берутся из /state.
     @discardableResult
     public func addNFT(_ payload: NFTCreate) async throws -> CreatedRef {
-        try await request("nft", method: "POST", body: payload, as: CreatedRef.self)
+        try await request("nft", method: "POST", body: payload, admin: true, as: CreatedRef.self)
     }
 
     /// Купить визуальный подарок за внутренние Stars (cost может быть 0).
@@ -129,18 +140,18 @@ public final class KUpergramAPI {
                           idempotencyKey: idempotencyKey, as: GiftResult.self)
     }
 
-    /// Админская передача владельца (без списания звёзд, без проверки владельца).
+    /// Админская передача владельца (без списания звёзд).
     public func transfer(id: String, toUser: String) async throws -> [String: String] {
         try await request("nft/\(id)/transfer", method: "POST",
-                          body: ["to_user": toUser], as: [String: String].self)
+                          body: ["to_user": toUser], admin: true, as: [String: String].self)
     }
 
     public func patchNFT(id: String, payload: NFTPatch) async throws -> [String: String] {
-        try await request("nft/\(id)", method: "PATCH", body: payload, as: [String: String].self)
+        try await request("nft/\(id)", method: "PATCH", body: payload, admin: true, as: [String: String].self)
     }
 
     public func deleteNFT(id: String) async throws {
-        _ = try await request("nft/\(id)", method: "DELETE", as: [String: String].self)
+        _ = try await request("nft/\(id)", method: "DELETE", admin: true, as: [String: String].self)
     }
 }
 
@@ -168,17 +179,18 @@ public struct NFTCreate: Encodable {
 }
 
 public struct PurchasePayload: Encodable {
-    public var ownerId: String = "me"; public var starsCost: Int = 0; public var collectible: Bool = false
+    // owner определяется сервером по токену — здесь его НЕТ
+    public var starsCost: Int = 0; public var collectible: Bool = false
     public var slug: String?; public var name: String?; public var number: String?
     public var model: String?; public var backdrop: String?; public var symbol: String?; public var imageUrl: String?
     enum CodingKeys: String, CodingKey {
-        case ownerId = "owner_id", starsCost = "stars_cost", collectible
+        case starsCost = "stars_cost", collectible
         case slug, name, number, model, backdrop, symbol, imageUrl = "image_url"
     }
-    public init(ownerId: String = "me", starsCost: Int = 0, collectible: Bool = false,
+    public init(starsCost: Int = 0, collectible: Bool = false,
                 slug: String? = nil, name: String? = nil, number: String? = nil,
                 model: String? = nil, backdrop: String? = nil, symbol: String? = nil, imageUrl: String? = nil) {
-        self.ownerId = ownerId; self.starsCost = starsCost; self.collectible = collectible
+        self.starsCost = starsCost; self.collectible = collectible
         self.slug = slug; self.name = name; self.number = number
         self.model = model; self.backdrop = backdrop; self.symbol = symbol; self.imageUrl = imageUrl
     }
@@ -195,10 +207,11 @@ public struct UpgradePayload: Encodable {
 public struct UpgradeResult: Codable { public let id: String; public let balance: Int? }
 
 public struct GiftPayload: Encodable {
-    public var fromUser: String; public var toUser: String; public var starsCost: Int = 0; public var message: String?
-    enum CodingKeys: String, CodingKey { case fromUser = "from_user", toUser = "to_user", starsCost = "stars_cost", message }
-    public init(fromUser: String, toUser: String, starsCost: Int = 0, message: String? = nil) {
-        self.fromUser = fromUser; self.toUser = toUser; self.starsCost = starsCost; self.message = message
+    // from_user определяется сервером по токену — здесь его НЕТ
+    public var toUser: String; public var starsCost: Int = 0; public var message: String?
+    enum CodingKeys: String, CodingKey { case toUser = "to_user", starsCost = "stars_cost", message }
+    public init(toUser: String, starsCost: Int = 0, message: String? = nil) {
+        self.toUser = toUser; self.starsCost = starsCost; self.message = message
     }
 }
 

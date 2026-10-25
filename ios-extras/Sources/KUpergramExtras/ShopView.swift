@@ -54,7 +54,6 @@ public struct ShopView: View {
         buying = item.id
         Task {
             await store.purchase(PurchasePayload(
-                ownerId: store.currentUserId,
                 starsCost: item.price,
                 collectible: item.collectible,
                 slug: item.slug,
